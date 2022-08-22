@@ -739,4 +739,10 @@ class virtualized_stimecmp_csr_t: public virtualized_csr_t {
   virtualized_stimecmp_csr_t(processor_t* const proc, csr_t_p orig, csr_t_p virt);
   virtual void verify_permissions(insn_t insn, bool write) const override;
 };
+
+class sqoscfg_csr_t: public masked_csr_t {
+ public:
+  sqoscfg_csr_t(processor_t* const proc, const reg_t addr, const reg_t mask, const reg_t init);
+  virtual void verify_permissions(insn_t insn, bool write) const override;
+};
 #endif

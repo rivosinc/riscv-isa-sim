@@ -1436,3 +1436,15 @@ void virtualized_stimecmp_csr_t::verify_permissions(insn_t insn, bool write) con
 
   virtualized_csr_t::verify_permissions(insn, write);
 }
+
+sqoscfg_csr_t::sqoscfg_csr_t(processor_t* const proc, const reg_t addr, const reg_t mask, const reg_t init):
+  masked_csr_t(proc, addr, mask, init) {
+}
+
+void sqoscfg_csr_t::verify_permissions(insn_t insn, bool write) const {
+  csr_t::verify_permissions(insn, write);
+
+  if (state->v) {
+      throw trap_virtual_instruction(insn.bits());
+  }
+}

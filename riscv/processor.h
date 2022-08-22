@@ -198,6 +198,8 @@ struct state_t
   csr_t_p stimecmp;
   csr_t_p vstimecmp;
 
+  csr_t_p sqoscfg;
+
   bool serialized; // whether timer CSRs are in a well-defined state
 
   // When true, execute a single instruction and then enter debug mode.  This

@@ -53,6 +53,7 @@ typedef enum {
   EXT_XZBR,
   EXT_XZBT,
   EXT_SSTC,
+  EXT_SSQOSID,
 } isa_extension_t;
 
 typedef enum {

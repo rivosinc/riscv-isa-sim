@@ -474,6 +474,12 @@ void state_t::reset(processor_t* const proc, reg_t max_isa)
     }
   }
 
+  if (proc->extension_enabled_const(EXT_SSQOSID)) {
+      const reg_t sqoscfg_mask = SQOSCFG_MCID | SQOSCFG_RCID;
+      sqoscfg = std::make_shared<sqoscfg_csr_t>(proc, CSR_SQOSCFG, sqoscfg_mask, 0);
+      csrmap[CSR_SQOSCFG] = sqoscfg;
+  }
+
   serialized = false;
 
 #ifdef RISCV_ENABLE_COMMITLOG
