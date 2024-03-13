@@ -473,8 +473,11 @@ void state_t::reset(processor_t* const proc, reg_t max_isa)
     const reg_t sstateen0_mask = (proc->extension_enabled(EXT_ZFINX) ? SSTATEEN0_FCSR : 0) |
                                  (proc->extension_enabled(EXT_ZCMT) ? SSTATEEN0_JVT : 0) |
                                  SSTATEEN0_CS;
-    const reg_t hstateen0_mask = sstateen0_mask | HSTATEEN0_SENVCFG | HSTATEEN_SSTATEEN;
-    const reg_t mstateen0_mask = hstateen0_mask | (proc->extension_enabled(EXT_SSQOSID) ?  MSTATEEN0_PRIV114 : 0);
+    const reg_t hstateen0_mask = sstateen0_mask | HSTATEEN0_SENVCFG | HSTATEEN_SSTATEEN |
+                                 (proc->extension_enabled_const(EXT_SSCTR) ? HSTATEEN0_CTR : 0);
+    const reg_t mstateen0_mask = hstateen0_mask | (proc->extension_enabled(EXT_SSQOSID) ?  MSTATEEN0_PRIV114 : 0) | 
+                                 (proc->extension_enabled_const(EXT_SMCTR) ? MSTATEEN0_CTR : 0);
+
     for (int i = 0; i < 4; i++) {
       const reg_t mstateen_mask = i == 0 ? mstateen0_mask : MSTATEEN_HSTATEEN;
       mstateen[i] = std::make_shared<masked_csr_t>(proc, CSR_MSTATEEN0 + i, mstateen_mask, 0);
@@ -531,7 +534,7 @@ void state_t::reset(processor_t* const proc, reg_t max_isa)
   sscsrind_reg_csr_t::sscsrind_reg_csr_t_p vsireg[6];
 
   if (proc->extension_enabled_const(EXT_SMCSRIND)) {
-    csr_t_p miselect = std::make_shared<basic_csr_t>(proc, CSR_MISELECT, 0);
+    miselect = std::make_shared<basic_csr_t>(proc, CSR_MISELECT, 0);
     csrmap[CSR_MISELECT] = miselect;
 
     const reg_t mireg_csrs[] = { CSR_MIREG, CSR_MIREG2, CSR_MIREG3, CSR_MIREG4, CSR_MIREG5, CSR_MIREG6 };
@@ -543,9 +546,9 @@ void state_t::reset(processor_t* const proc, reg_t max_isa)
   }
 
   if (proc->extension_enabled_const(EXT_SSCSRIND)) {
-    csr_t_p vsiselect = std::make_shared<basic_csr_t>(proc, CSR_VSISELECT, 0);
+    vsiselect = std::make_shared<basic_csr_t>(proc, CSR_VSISELECT, 0);
     csrmap[CSR_VSISELECT] = vsiselect;
-    csr_t_p siselect = std::make_shared<basic_csr_t>(proc, CSR_SISELECT, 0);
+    siselect = std::make_shared<basic_csr_t>(proc, CSR_SISELECT, 0);
     csrmap[CSR_SISELECT] = std::make_shared<virtualized_csr_t>(proc, siselect, vsiselect);
 
     const reg_t vsireg_csrs[] = { CSR_VSIREG, CSR_VSIREG2, CSR_VSIREG3, CSR_VSIREG4, CSR_VSIREG5, CSR_VSIREG6 };
@@ -580,6 +583,69 @@ void state_t::reset(processor_t* const proc, reg_t max_isa)
     const reg_t srmcfg_mask = SRMCFG_MCID | SRMCFG_RCID;
     srmcfg = std::make_shared<srmcfg_csr_t>(proc, CSR_SRMCFG, srmcfg_mask, 0);
     csrmap[CSR_SRMCFG] = srmcfg;
+  }
+
+  auto smctr_enabled = proc->extension_enabled_const(EXT_SMCTR);
+  if (smctr_enabled) {
+    memset(ctrsource, 0, sizeof(ctrsource));
+    memset(ctrtarget, 0, sizeof(ctrtarget));
+    memset(ctrdata, 0, sizeof(ctrdata));
+    mctrcontrol = std::make_shared<smctrcontrol_csr_t>(proc, CSR_MCTRCONTROL);
+    auto mireg_csrs = {CSR_MIREG, CSR_MIREG2, CSR_MIREG3};
+    smctrdeleg_indirect_csr_t_p mireg_deleg[3];
+    auto i = 0;
+    for(auto csr : mireg_csrs) {
+      mireg_deleg[i] = std::make_shared<smctrdeleg_indirect_csr_t>(proc, csr, miselect);
+      i++;
+    }
+    auto sireg_csrs = {CSR_SIREG, CSR_SIREG2, CSR_SIREG3};
+    smctrdeleg_indirect_csr_t_p sireg_deleg[3];
+    auto vsireg_csrs = {CSR_VSIREG, CSR_VSIREG2, CSR_VSIREG3};
+    smctrdeleg_indirect_csr_t_p vsireg_deleg[3];
+    auto ssctr_enabled = proc->extension_enabled_const(EXT_SSCTR);
+    if (ssctr_enabled) {
+      i = 0;
+      for(auto csr : sireg_csrs) {
+        sireg_deleg[i] = std::make_shared<smctrdeleg_indirect_csr_t>(proc, csr, siselect);
+        i++;
+      }
+      i = 0;
+      for(auto csr : vsireg_csrs) {
+        vsireg_deleg[i] = std::make_shared<smctrdeleg_indirect_csr_t>(proc, csr, vsiselect);
+        i++;
+      }
+    }
+    for (auto i = MISELECT_CTR_START; i <= MISELECT_CTR_END; i++) {
+      mireg[0]->add_ireg_proxy(i, mireg_deleg[0]);
+      mireg[1]->add_ireg_proxy(i, mireg_deleg[1]);
+      mireg[2]->add_ireg_proxy(i, mireg_deleg[2]);
+      if (ssctr_enabled) {
+        sireg[0]->add_ireg_proxy(i, sireg_deleg[0]);
+        sireg[1]->add_ireg_proxy(i, sireg_deleg[1]);
+        sireg[2]->add_ireg_proxy(i, sireg_deleg[2]);
+        vsireg[0]->add_ireg_proxy(i, vsireg_deleg[0]);
+        vsireg[1]->add_ireg_proxy(i, vsireg_deleg[1]);
+        vsireg[2]->add_ireg_proxy(i, vsireg_deleg[2]);
+      }
+    }
+    if (xlen == 32) {
+      csrmap[CSR_MCTRCONTROL] = std::make_shared<rv32_low_csr_t>(proc, CSR_MCTRCONTROL, mctrcontrol);
+    } else {
+      csrmap[CSR_MCTRCONTROL] = mctrcontrol;
+    }
+    if (ssctr_enabled) {
+      auto sctrcontrol = std::make_shared<smctrcontrol_proxy_csr_t>(proc, CSR_SCTRCONTROL, mctrcontrol);
+      vsctrcontrol = std::make_shared<smctrcontrol_csr_t>(proc, CSR_VSCTRCONTROL);
+      auto sctrcontrol_v = std::make_shared<virtualized_indirect_csr_t>(proc, sctrcontrol, vsctrcontrol);
+      csrmap[CSR_SCTRSTATUS] = sctrstatus = std::make_shared<ssctrstatus_csr_t>(proc, CSR_SCTRSTATUS);
+      if (xlen == 32) {
+        csrmap[CSR_SCTRCONTROL] = std::make_shared<rv32_low_csr_t>(proc, CSR_SCTRCONTROL, sctrcontrol_v);
+        csrmap[CSR_VSCTRCONTROL] = std::make_shared<rv32_low_csr_t>(proc, CSR_VSCTRCONTROL, vsctrcontrol);
+      } else {
+        csrmap[CSR_SCTRCONTROL] = sctrcontrol_v;
+        csrmap[CSR_VSCTRCONTROL] = vsctrcontrol;
+      }
+    }
   }
 
   serialized = false;
@@ -931,6 +997,18 @@ void processor_t::take_trap(trap_t& t, reg_t epc)
     if (state.mstatush) state.mstatush->write(s >> 32);  // log mstatush change
     set_privilege(PRV_M, false);
   }
+
+  if (!state.debug_mode && is_ctr_enabled()) {
+    if (interrupt && uint8_t(t.cause()) == IRQ_LCOF) {
+      ctr_freeze(MCTRCONTROL_LCOFIFRZ);
+    } else if (t.cause() == CAUSE_BREAKPOINT) {
+      ctr_freeze(MCTRCONTROL_BPFRZ);
+    }
+
+    if (is_ctr_enabled()) {
+      ctr_add_entry(epc, state.pc, interrupt ? CTRDATA_TYPE_INTERRUPT : CTRDATA_TYPE_EXCEPTION);
+    }
+  }
 }
 
 void processor_t::take_trigger_action(triggers::action_t action, reg_t breakpoint_tval, reg_t epc, bool virt)
@@ -1220,5 +1298,229 @@ void processor_t::trigger_updated(const std::vector<triggers::trigger_t *> &trig
     if (trigger->icount_check_needed()) {
       check_triggers_icount = true;
     }
+  }
+}
+
+static reg_t get_ctr_mask(const state_t* state, bool source) {
+  auto prv = state->prv;
+  if (source && state->prv_changed) {
+    prv = state->prev_prv;
+  }
+
+  if (prv == PRV_M) {
+    return MCTRCONTROL_M_ENABLE;
+  }
+  if (prv > PRV_U) {
+    return MCTRCONTROL_S_ENABLE;
+  }
+  return MCTRCONTROL_U_ENABLE;
+}
+
+static reg_t get_ctr_control(const state_t* state, bool source) {
+  auto v = state->v;
+  if (source && state->v_changed) {
+    v = state->prev_v;
+  }
+
+  if (v) {
+    return state->vsctrcontrol->unmasked_read();
+  }
+
+  auto prv = state->prv;
+  if (source && state->prv_changed) {
+    prv = state->prev_prv;
+  }
+
+  if (prv == PRV_M)
+    return state->mctrcontrol->unmasked_read() & MCTRCONTROL_MASK;
+
+  return state->mctrcontrol->unmasked_read() & SCTRCONTROL_MASK;
+}
+
+void processor_t::ctr_freeze(uint64_t freeze_mask) {
+  auto state = get_state();
+  assert((freeze_mask & ~(MCTRCONTROL_BPFRZ | MCTRCONTROL_LCOFIFRZ)) == 0);
+
+  if (get_ctr_control(state, true) & freeze_mask) {
+    auto status = state->sctrstatus->read();
+    state->sctrstatus->write(status | SCTRSTATUS_FROZEN);
+  }
+}
+
+void processor_t::ctr_add_entry(reg_t source_pc, reg_t target_pc, reg_t type) {
+  auto state = get_state();
+  reg_t source_mask = get_ctr_mask(state, true);
+  reg_t target_mask = get_ctr_mask(state, false);
+  reg_t source_control = get_ctr_control(state, true);
+  reg_t target_control = get_ctr_control(state, false);
+
+  /* If RASEMU is enabled, only record indirect, direct calls, function
+      returns, and co-routine swaps. */
+  if ((target_control & MCTRCONTROL_RASEMU) &&
+      type != CTRDATA_TYPE_INDIRECT_CALL &&
+      type != CTRDATA_TYPE_DIRECT_CALL &&
+      type != CTRDATA_TYPE_RETURN &&
+      type != CTRDATA_TYPE_CO_ROUTINE_SWAP) {
+      return;
+  }
+
+  if (type == CTRDATA_TYPE_EXCEPTION || type == CTRDATA_TYPE_INTERRUPT) {
+      /* Inhibited in source, enabled in target */
+      if (!(source_control & source_mask) && (target_control & target_mask)) {
+        source_pc = 0;
+      } else if (source_control & source_mask &&
+                  !(target_control & target_mask)) {
+        auto external_trap_bit = MCTRCONTROL_MTE;
+        if (state->prv < PRV_M) {
+          external_trap_bit = MCTRCONTROL_STE;
+        }
+        /* If inhibited in target, ETEN must be set and the target
+           enable external trap bit must be set */
+        if (!(target_control & MCTRCONTROL_ETEN) || !(target_control & external_trap_bit)) {
+          return;
+        }
+        type = CTRDATA_TYPE_EXTERNAL_TRAP;
+        target_pc = 0;
+      } else if (!(source_control & source_mask) &&
+                 !(target_control & target_mask)) {
+        return;
+      }
+  } else if (type == CTRDATA_TYPE_EXCEP_INT_RET) {
+    /* Trap returns from inhibited mode are not recorded. */
+    if (!(source_control & source_mask)) {
+      return;
+    }
+
+    /* Inhibited in target mode */
+    if (!(target_control & target_mask)) {
+      target_pc = 0;
+    }
+  } else if (!(target_control & target_mask)) {
+    return;
+  }
+
+  /* Ignore filters in case of RASEMU mode or External trap. */
+  if (!(target_control & MCTRCONTROL_RASEMU) &&
+      type != CTRDATA_TYPE_EXTERNAL_TRAP) {
+    /* Check if the specific type is inhibited. Not taken branch filter is an
+     * enable bit and needs to be checked separatly.
+     */
+    auto check = target_control & (1ULL << (type + MCTRCONTROL_INH_START - 1));
+    if ((type == CTRDATA_TYPE_NONTAKEN_BRANCH && !check) ||
+        (type != CTRDATA_TYPE_NONTAKEN_BRANCH && check)) {
+      return;
+    }
+  }
+
+  auto status = state->sctrstatus->read();
+  auto head = get_field(status, SCTRSTATUS_WRPTR_MASK);
+  auto depth = 16 << get_field(target_control, MCTRCONTROL_DEPTH_MASK);
+  if (target_control & MCTRCONTROL_RASEMU && type == CTRDATA_TYPE_RETURN) {
+    head = (head - 1) & (depth - 1);
+    state->ctrsource[head] &= ~CTRSOURCE_VALID;
+
+    status = set_field(status, SCTRSTATUS_WRPTR_MASK, head);
+    state->sctrstatus->write(status);
+    return;
+  }
+
+  if (target_control & MCTRCONTROL_RASEMU &&
+      type == CTRDATA_TYPE_CO_ROUTINE_SWAP) {
+    head = (head - 1) & (depth - 1);
+  }
+
+  state->ctrsource[head] = source_pc | CTRSOURCE_VALID;
+  state->ctrtarget[head] = target_pc & ~CTRTARGET_MISP;
+  state->ctrdata[head] = set_field(0, CTRDATA_TYPE_MASK, type);
+  head = (head + 1) & (depth - 1);
+  status = set_field(status, SCTRSTATUS_WRPTR_MASK, head);
+  state->sctrstatus->write(status);
+}
+
+bool processor_t::is_ctr_enabled() {
+  if (!extension_enabled(EXT_SMCTR)) {
+    return false;
+  }
+  if (get_state()->sctrstatus->read() & SCTRSTATUS_FROZEN) {
+    return false;
+  }
+  return true;
+}
+
+void processor_t::ctr_process_insn(reg_t source_pc, reg_t target_pc, insn_t insn) {
+  auto insn_bits = insn.bits();
+  auto rd = insn.rd();
+  auto rs1 = insn.rs1();
+  /*
+   * Direct calls
+   * – jal x1;
+   * – jal x5;
+   * – c.jal.
+   *
+   * Direct jumps
+   * – jal x0;
+   * – c.j;
+   *
+   * Indirect calls
+   * – jalr x1, rs where rs != x5;
+   * – jalr x5, rs where rs != x1;
+   * – c.jalr rs1 where rs1 != x5;
+   *
+   * Indirect jumps
+   * – jalr x0, rs where rs != x1 and rs != x5;
+   * – c.jr rs1 where rs1 != x1 and rs1 != x5.
+   *
+   * Returns
+   * – jalr rd, rs where (rs == x1 or rs == x5) and rd != x1 and rd != x5;
+   * – c.jr rs1 where rs1 == x1 or rs1 == x5.
+   *
+   * Co-routine swap
+   * – jalr x1, x5;
+   * – jalr x5, x1;
+   * – c.jalr x5.
+   *
+   * Other direct jumps
+   * – jalr rd, rs where rs != x1, rs != x5, rd != x0, rd != x1 and rd != x5.
+   * – jal rd where rd != x1 and rd != x5 and rd != x0;
+   */
+  if ((insn_bits & MASK_JAL) == MATCH_JAL) {
+    if (rd == 1 || rd == 5) {
+      ctr_add_entry(source_pc, target_pc, CTRDATA_TYPE_DIRECT_CALL);
+    } else if (rd == 0) {
+      ctr_add_entry(source_pc, target_pc, CTRDATA_TYPE_DIRECT_JUMP);
+    } else {
+      ctr_add_entry(source_pc, target_pc, CTRDATA_TYPE_OTHER_DIRECT_JUMP);
+    }
+  } else if ((insn_bits & MASK_C_J) == MATCH_C_J) {
+    ctr_add_entry(source_pc, target_pc, CTRDATA_TYPE_DIRECT_JUMP);
+  } else if (((insn_bits & MASK_C_JAL) == MATCH_C_JAL) && xlen == 32) {
+    ctr_add_entry(source_pc, target_pc, CTRDATA_TYPE_DIRECT_CALL);
+  } else if ((insn_bits & MASK_JALR) == MATCH_JALR) {
+    if ((rd == 1 && rs1 != 5) || (rd == 5 && rs1 != 1)) {
+      ctr_add_entry(source_pc, target_pc, CTRDATA_TYPE_INDIRECT_CALL);
+    } else if (rd == 0 && rs1 != 1 && rs1 != 5) {
+      ctr_add_entry(source_pc, target_pc, CTRDATA_TYPE_INDIRECT_JUMP);
+    } else if ((rs1 == 1 || rs1 == 5) && (rd != 1 && rd != 5)) {
+      ctr_add_entry(source_pc, target_pc, CTRDATA_TYPE_RETURN);
+    } else if ((rs1 == 1 && rd == 5) || (rs1 == 5 && rd == 1)) {
+      ctr_add_entry(source_pc, target_pc, CTRDATA_TYPE_CO_ROUTINE_SWAP);
+    } else {
+      ctr_add_entry(source_pc, target_pc, CTRDATA_TYPE_OTHER_INDIRECT_JUMP);
+    }
+  } else if ((insn_bits & MASK_C_JALR) == MATCH_C_JALR) {
+    if (rd != 5) {
+      ctr_add_entry(source_pc, target_pc, CTRDATA_TYPE_INDIRECT_CALL);
+    } else {
+      ctr_add_entry(source_pc, target_pc, CTRDATA_TYPE_CO_ROUTINE_SWAP);
+    }
+  } else if ((insn_bits & MASK_C_JR) == MATCH_C_JR) {
+    if (rd == 1 || rd == 5) {
+      ctr_add_entry(source_pc, target_pc, CTRDATA_TYPE_RETURN);
+    } else {
+      ctr_add_entry(source_pc, target_pc, CTRDATA_TYPE_INDIRECT_JUMP);
+    }
+  } else if (((insn_bits & MASK_MRET) == MATCH_MRET) ||
+             ((insn_bits & MASK_SRET) == MATCH_SRET)) {
+    ctr_add_entry(source_pc, target_pc, CTRDATA_TYPE_EXCEP_INT_RET);
   }
 }

@@ -861,4 +861,56 @@ class hvip_csr_t : public basic_csr_t {
 };
 
 typedef std::shared_ptr<hvip_csr_t> hvip_csr_t_p;
+
+
+// Smctr control CSR
+class smctrcontrol_csr_t : public basic_csr_t {
+ public:
+  smctrcontrol_csr_t(processor_t * const proc, const reg_t addr);
+  virtual void verify_permissions(insn_t insn, bool write) const override;
+  virtual reg_t read() const noexcept override;
+  // Needed by ctr_add_entry() logic.
+  reg_t unmasked_read() const noexcept;
+  reg_t get_csr_mask(const bool write, const reg_t addr) const noexcept;
+ protected:
+  virtual bool unlogged_write(const reg_t val) noexcept override;
+};
+
+typedef std::shared_ptr<smctrcontrol_csr_t> smctrcontrol_csr_t_p;
+
+// ssctrstatus CSR
+class ssctrstatus_csr_t : public basic_csr_t {
+ public:
+  ssctrstatus_csr_t(processor_t * const proc, const reg_t addr);
+ protected:
+  virtual bool unlogged_write(const reg_t val) noexcept override;
+};
+
+typedef std::shared_ptr<ssctrstatus_csr_t> ssctrstatus_csr_t_p;
+
+// Proxy access to smctrcontrol_csr_t
+class smctrcontrol_proxy_csr_t: public proxy_csr_t {
+ public:
+  smctrcontrol_proxy_csr_t(processor_t* const proc, const reg_t addr, smctrcontrol_csr_t_p delegate);
+  virtual reg_t read() const noexcept override;
+ protected:
+  bool unlogged_write(const reg_t val) noexcept override;
+  smctrcontrol_csr_t_p delegate;
+};
+
+// Smctr CSR for proxy acccess to counter records
+class smctrdeleg_indirect_csr_t : public csr_t {
+ public:
+  smctrdeleg_indirect_csr_t(processor_t* const proc, const reg_t addr, csr_t_p iselect);
+  virtual void verify_permissions(insn_t insn, bool write) const override;
+  virtual reg_t read() const noexcept override;
+ protected:
+  virtual bool unlogged_write(const reg_t val) noexcept override;
+ private:
+  csr_t_p iselect;
+  reg_t* get_ctr_record() const noexcept;
+};
+
+typedef std::shared_ptr<smctrdeleg_indirect_csr_t> smctrdeleg_indirect_csr_t_p;
+
 #endif

@@ -282,7 +282,11 @@ void processor_t::step(size_t n)
           insn_fetch_t fetch = mmu->load_insn(pc);
           if (debug && !state.serialized)
             disasm(fetch.insn);
+          reg_t src = pc;
           pc = execute_insn_logged(this, pc, fetch);
+          if (is_ctr_enabled())
+              ctr_process_insn(src, invalid_pc(pc) ? state.pc : pc, fetch.insn);
+
           advance_pc();
         }
       }
@@ -291,7 +295,11 @@ void processor_t::step(size_t n)
         // Main simulation loop, fast path.
         for (auto ic_entry = _mmu->access_icache(pc); ; ) {
           auto fetch = ic_entry->data;
+          reg_t src = pc;
           pc = execute_insn_fast(this, pc, fetch);
+          if (is_ctr_enabled()) {
+            ctr_process_insn(src, invalid_pc(pc) ? state.pc : pc, fetch.insn);
+          }
           ic_entry = ic_entry->next;
           if (unlikely(ic_entry->tag != pc))
             break;

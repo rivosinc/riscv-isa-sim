@@ -137,6 +137,9 @@ struct state_t
   csr_t_p vstval;
   csr_t_p vsatp;
 
+  csr_t_p miselect;
+  csr_t_p siselect;
+  csr_t_p vsiselect;
   csr_t_p dpc;
   dcsr_csr_t_p dcsr;
   csr_t_p tselect;
@@ -172,6 +175,14 @@ struct state_t
   csr_t_p vstimecmp;
 
   csr_t_p srmcfg;
+
+  // Smcntr
+  smctrcontrol_csr_t_p mctrcontrol;
+  smctrcontrol_csr_t_p vsctrcontrol;
+  ssctrstatus_csr_t_p sctrstatus;
+  uint64_t ctrsource[16 << MCTRCONTROL_DEPTH_MAX];
+  uint64_t ctrtarget[16 << MCTRCONTROL_DEPTH_MAX];
+  uint64_t ctrdata[16 << MCTRCONTROL_DEPTH_MAX];
 
   bool serialized; // whether timer CSRs are in a well-defined state
 
@@ -369,10 +380,15 @@ private:
   void build_opcode_map();
   void register_base_instructions();
   insn_func_t decode_insn(insn_t insn);
+  void ctr_process_insn(reg_t source_pc, reg_t target_pc, insn_t insn);
 
   // Track repeated executions for processor_t::disasm()
   uint64_t last_pc, last_bits, executions;
 public:
+  void ctr_freeze(uint64_t freeze_mask);
+  void ctr_add_entry(reg_t source_pc, reg_t target_pc, reg_t type);
+  bool is_ctr_enabled();
+
   entropy_source es; // Crypto ISE Entropy source.
 
   reg_t n_pmp;

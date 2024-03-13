@@ -1736,3 +1736,149 @@ bool hvip_csr_t::unlogged_write(const reg_t val) noexcept {
   state->mip->write_with_mask(MIP_VSSIP, val); // hvip.VSSIP is an alias of mip.VSSIP
   return basic_csr_t::unlogged_write(val & (MIP_VSEIP | MIP_VSTIP));
 }
+
+smctrcontrol_csr_t::smctrcontrol_csr_t(processor_t * const proc, const reg_t addr) :
+  basic_csr_t(proc, addr, 0) {
+}
+
+reg_t smctrcontrol_csr_t::unmasked_read() const noexcept {
+  // CLR is hardcoded to 0 on reads
+  return basic_csr_t::read() & ~MCTRCONTROL_CLR;
+}
+
+void smctrcontrol_csr_t::verify_permissions(insn_t insn, bool write) const {
+  if (state->v) {
+    // don't call csr_t::verify_permissions for virtualized CSRs because the underlying CSR address requires HS permission
+    if (insn.csr() == CSR_VSCTRCONTROL) {
+      throw trap_virtual_instruction(insn.bits());
+    }
+  } else {
+    csr_t::verify_permissions(insn, write);
+  }
+}
+
+reg_t smctrcontrol_csr_t::get_csr_mask(const bool write, const reg_t addr) const noexcept {
+  if (addr == CSR_MCTRCONTROL)
+    return MCTRCONTROL_MASK;
+  if (addr == CSR_VSCTRCONTROL)
+    return write ? VSCTRCONTROL_W_MASK : VSCTRCONTROL_R_MASK;
+  return SCTRCONTROL_MASK;
+}
+
+reg_t smctrcontrol_csr_t::read() const noexcept {
+  // CLR is hardcoded to 0 on reads
+  return basic_csr_t::read() & get_csr_mask(false, address) & ~MCTRCONTROL_CLR;
+}
+
+bool smctrcontrol_csr_t::unlogged_write(const reg_t val) noexcept {
+  if (val & MCTRCONTROL_CLR) {
+    // Writes to vsctrcontrol clear state only if state->v, so clear only
+    // on a redirect from VS, or a write to mctrcontrol / sctrcontrol
+    if (state->v || address != CSR_VSCTRCONTROL) {
+      memset(state->ctrsource, 0, sizeof(state->ctrsource));
+      memset(state->ctrtarget, 0, sizeof(state->ctrtarget));
+      memset(state->ctrdata, 0, sizeof(state->ctrdata));
+      state->sctrstatus->write(0);
+    }
+  }
+  // If software writes a DEPTH value above the maximum supported, DEPTH must read back the maximum supported value.
+  auto val_to_write = val;
+  auto depth = get_field(val_to_write, MCTRCONTROL_DEPTH_MASK);
+  if (depth > MCTRCONTROL_DEPTH_MAX)
+    val_to_write = set_field(val_to_write, MCTRCONTROL_DEPTH_MASK, MCTRCONTROL_DEPTH_MAX);
+  // Update sctrstatus.WRPTR with a legal value
+  unsigned wrptr_mask = (16 << depth) - 1;
+  auto sctrstatus_val = state->sctrstatus->read();
+  sctrstatus_val = set_field(sctrstatus_val, SCTRSTATUS_WRPTR_MASK, get_field(sctrstatus_val, SCTRSTATUS_WRPTR_MASK) & wrptr_mask);
+  state->sctrstatus->write(sctrstatus_val);
+  auto mask = get_csr_mask(true, address);
+  return basic_csr_t::unlogged_write((read() & ~mask) | (val_to_write & mask));
+}
+
+ssctrstatus_csr_t::ssctrstatus_csr_t(processor_t * const proc, const reg_t addr) :
+  basic_csr_t(proc, addr, 0) {
+}
+
+bool ssctrstatus_csr_t::unlogged_write(const reg_t val) noexcept {
+  unsigned wrptr_mask = (16 << get_field(state->mctrcontrol->read(), MCTRCONTROL_DEPTH_MASK)) - 1;
+  wrptr_mask = set_field(SCTRSTATUS_MASK, SCTRSTATUS_WRPTR_MASK, wrptr_mask);
+
+  return basic_csr_t::unlogged_write(val & wrptr_mask);
+}
+
+smctrcontrol_proxy_csr_t::smctrcontrol_proxy_csr_t(processor_t* const proc, const reg_t addr, smctrcontrol_csr_t_p delegate) : proxy_csr_t(proc, addr, delegate), delegate(delegate) {
+}
+
+reg_t smctrcontrol_proxy_csr_t::read() const noexcept {
+  return proxy_csr_t::read() & delegate->get_csr_mask(false, address);
+}
+
+bool smctrcontrol_proxy_csr_t::unlogged_write(const reg_t val) noexcept {
+  auto mask = delegate->get_csr_mask(true, address);
+  return proxy_csr_t::unlogged_write((delegate->read() & ~mask) | (val & mask));
+}
+
+smctrdeleg_indirect_csr_t::smctrdeleg_indirect_csr_t(processor_t* const proc, const reg_t addr, csr_t_p iselect):
+  csr_t(proc, addr),
+  iselect(iselect) {
+}
+
+// Returns the the proxy CSR for the siselect value
+reg_t* smctrdeleg_indirect_csr_t::get_ctr_record() const noexcept {
+  auto index = iselect->read();
+  assert(index >= MISELECT_CTR_START && index <= MISELECT_CTR_END);
+  index -= MISELECT_CTR_START;
+  unsigned depth = 16 << get_field(state->mctrcontrol->read(), MCTRCONTROL_DEPTH_MASK);
+  auto wrptr = (state->sctrstatus->read()) & SCTRSTATUS_WRPTR_MASK;
+
+  // index greater than depth-1 is read-only zero
+  if (index >= depth)
+    return nullptr;
+
+  // Logical entry 0, accessed via mireg* when miselect=0x200, is always
+  // the physical entry preceding the wrptr (WRPTR-1 % depth).
+  index = ((wrptr - 1) - index) & (depth - 1);
+
+  if (address == CSR_MIREG || address == CSR_SIREG || address == CSR_VSIREG) {
+    return &state->ctrsource[index];
+  }
+
+  if (address == CSR_MIREG2 || address == CSR_SIREG2 || address == CSR_VSIREG2) {
+    return &state->ctrtarget[index];
+  }
+
+  if (address == CSR_MIREG3 || address == CSR_SIREG3 || address == CSR_VSIREG3) {
+    return &state->ctrdata[index];
+  }
+  assert(false);
+  return nullptr;
+}
+
+reg_t smctrdeleg_indirect_csr_t::read() const noexcept {
+  reg_t* reg = get_ctr_record();
+  return reg ? *reg : 0;
+}
+
+bool smctrdeleg_indirect_csr_t::unlogged_write(const reg_t val) noexcept {
+  reg_t* reg = get_ctr_record();
+  if (reg)
+    *reg = val;
+  // Log only under the original (delegate's) name
+  return false;
+}
+
+void smctrdeleg_indirect_csr_t::verify_permissions(insn_t insn, bool write) const {
+  // Base permissions checks are already handled by sscsrind_reg_csr_t::verify_permissions()
+  if (state->prv < PRV_M) {
+    // If stateen is enabled, mstateen0[55] must be set for non M-mode
+    if (proc->extension_enabled_const(EXT_SMSTATEEN)) {
+      if (!(state->mstateen[0]->read() & MSTATEEN0_CTR)) {
+        throw trap_illegal_instruction(insn.bits());
+      }
+      // VS-mode access requires hstateen0[55] to be set
+      if (state->v && (!(state->hstateen[0]->read() & HSTATEEN0_CTR))) {
+        throw trap_virtual_instruction(insn.bits());
+      }
+    }
+  }
+}
